@@ -45,6 +45,7 @@
 #include "Random.h"
 #include "RBAC.h"
 #include "Realm.h"
+#include "RealmList.h"
 #include "ScriptMgr.h"
 #include "SocialMgr.h"
 #include "WardenWin.h"
@@ -795,7 +796,14 @@ void WorldSession::Handle_EarlyProccess(WorldPacket& recvPacket)
 void WorldSession::SendConnectToInstance(WorldPackets::Auth::ConnectToSerial serial)
 {
     boost::system::error_code ignored_error;
-    boost::asio::ip::address instanceAddress = realm.GetAddressForClient(Trinity::Net::make_address(GetRemoteAddress(), ignored_error));
+    Optional<boost::asio::ip::address> instanceAddress = sRealmList->GetAddressForClient(
+        realm.Id, Trinity::Net::make_address(GetRemoteAddress(), ignored_error));
+    if (!instanceAddress)
+    {
+        TC_LOG_ERROR("network", "Could not find realm %u while preparing an instance connection for account %u",
+            realm.Id.Realm, GetAccountId());
+        return;
+    }
 
     _instanceConnectKey.Fields.AccountId = GetAccountId();
     _instanceConnectKey.Fields.ConnectionType = CONNECTION_TYPE_INSTANCE;
@@ -805,14 +813,14 @@ void WorldSession::SendConnectToInstance(WorldPackets::Auth::ConnectToSerial ser
     connectTo.Key = _instanceConnectKey.Raw;
     connectTo.Serial = serial;
     connectTo.Payload.Port = sWorld->getIntConfig(CONFIG_PORT_WORLD);
-    if (instanceAddress.is_v4())
+    if (instanceAddress->is_v4())
     {
-        memcpy(connectTo.Payload.Where.data(), instanceAddress.to_v4().to_bytes().data(), 4);
+        memcpy(connectTo.Payload.Where.data(), instanceAddress->to_v4().to_bytes().data(), 4);
         connectTo.Payload.Type = WorldPackets::Auth::ConnectTo::IPv4;
     }
     else
     {
-        memcpy(connectTo.Payload.Where.data(), instanceAddress.to_v6().to_bytes().data(), 16);
+        memcpy(connectTo.Payload.Where.data(), instanceAddress->to_v6().to_bytes().data(), 16);
         connectTo.Payload.Type = WorldPackets::Auth::ConnectTo::IPv6;
     }
     connectTo.Con = CONNECTION_TYPE_INSTANCE;

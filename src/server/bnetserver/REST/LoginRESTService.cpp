@@ -106,6 +106,10 @@ bool LoginRESTService::Start(Trinity::Asio::IoContext* ioContext)
     _localAddress = *localAddress;
     _localNetmask = Trinity::Net::GetDefaultNetmaskV4(_localAddress.address().to_v4());
 
+    _addressTimer = std::make_unique<Trinity::Asio::DeadlineTimer>(*ioContext);
+    _addressTimer->expires_from_now(boost::posix_time::seconds(10));
+    _addressTimer->async_wait(std::bind(&LoginRESTService::AddressUpdateCallback, this, std::placeholders::_1));
+
     // set up form inputs
     Battlenet::JSON::Login::FormInput* input;
     _formInputs.set_type(Battlenet::JSON::Login::LOGIN_FORM);
@@ -135,11 +139,18 @@ bool LoginRESTService::Start(Trinity::Asio::IoContext* ioContext)
 void LoginRESTService::Stop()
 {
     _stopped = true;
+    {
+        std::lock_guard<std::mutex> guard(_timerMutex);
+        if (_addressTimer)
+            _addressTimer->cancel();
+    }
     _thread.join();
 }
 
-boost::asio::ip::tcp::endpoint const& LoginRESTService::GetAddressForClient(boost::asio::ip::address const& address) const
+boost::asio::ip::tcp::endpoint LoginRESTService::GetAddressForClient(boost::asio::ip::address const& address) const
 {
+    std::lock_guard<std::mutex> guard(_addressMutex);
+
     if (address.is_loopback())
         return _localAddress;
     else if (_localAddress.address().is_loopback())
@@ -149,6 +160,83 @@ boost::asio::ip::tcp::endpoint const& LoginRESTService::GetAddressForClient(boos
         return _localAddress;
 
     return _externalAddress;
+}
+
+void LoginRESTService::AddressUpdateCallback(boost::system::error_code const& error)
+{
+    if (error || _stopped)
+        return;
+
+    UpgradeLoginAddresses();
+
+    std::lock_guard<std::mutex> guard(_timerMutex);
+    if (_stopped)
+        return;
+
+    _addressTimer->expires_from_now(boost::posix_time::seconds(10));
+    _addressTimer->async_wait(std::bind(&LoginRESTService::AddressUpdateCallback, this, std::placeholders::_1));
+}
+
+void LoginRESTService::UpgradeLoginAddresses()
+{
+    Trinity::Asio::Resolver resolver(*_ioContext);
+    std::string configuredExternal = sConfigMgr->GetStringDefault("LoginREST.ExternalAddress", "127.0.0.1");
+    std::string configuredLocal = sConfigMgr->GetStringDefault("LoginREST.LocalAddress", "127.0.0.1");
+
+    boost::asio::ip::tcp::endpoint previousExternal;
+    boost::asio::ip::tcp::endpoint previousLocal;
+    {
+        std::lock_guard<std::mutex> guard(_addressMutex);
+        previousExternal = _externalAddress;
+        previousLocal = _localAddress;
+    }
+
+    boost::asio::ip::tcp::endpoint newExternal = previousExternal;
+    boost::asio::ip::tcp::endpoint newLocal = previousLocal;
+    boost::asio::ip::address_v4 newNetmask = Trinity::Net::GetDefaultNetmaskV4(previousLocal.address().to_v4());
+    bool externalUpdated = false;
+    bool localUpdated = false;
+
+    Optional<boost::asio::ip::tcp::endpoint> resolved = resolver.Resolve(boost::asio::ip::tcp::v4(), configuredExternal, std::to_string(_port));
+    if (resolved)
+    {
+        if (resolved->address() != previousExternal.address())
+            TC_LOG_INFO("server.rest", "LoginREST.ExternalAddress (%s) now resolves to %s", configuredExternal.c_str(), resolved->address().to_string().c_str());
+        newExternal = *resolved;
+        externalUpdated = true;
+    }
+    else
+    {
+        TC_LOG_WARN("server.rest", "Could not resolve LoginREST.ExternalAddress %s, keeping previous address %s",
+            configuredExternal.c_str(), previousExternal.address().to_string().c_str());
+    }
+
+    resolved = resolver.Resolve(boost::asio::ip::tcp::v4(), configuredLocal, std::to_string(_port));
+    if (resolved)
+    {
+        if (resolved->address() != previousLocal.address())
+            TC_LOG_INFO("server.rest", "LoginREST.LocalAddress (%s) now resolves to %s", configuredLocal.c_str(), resolved->address().to_string().c_str());
+        newLocal = *resolved;
+        newNetmask = Trinity::Net::GetDefaultNetmaskV4(newLocal.address().to_v4());
+        localUpdated = true;
+    }
+    else
+    {
+        TC_LOG_WARN("server.rest", "Could not resolve LoginREST.LocalAddress %s, keeping previous address %s",
+            configuredLocal.c_str(), previousLocal.address().to_string().c_str());
+    }
+
+    if (externalUpdated || localUpdated)
+    {
+        std::lock_guard<std::mutex> guard(_addressMutex);
+        if (externalUpdated)
+            _externalAddress = newExternal;
+        if (localUpdated)
+        {
+            _localAddress = newLocal;
+            _localNetmask = newNetmask;
+        }
+    }
 }
 
 void LoginRESTService::Run()

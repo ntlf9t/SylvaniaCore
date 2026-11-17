@@ -19,12 +19,14 @@
 #define LoginRESTService_h__
 
 #include "Define.h"
+#include "DeadlineTimer.h"
 #include "IoContext.h"
 #include "IpAddress.h"
 #include "Login.pb.h"
 #include "Session.h"
 #include <boost/asio/ip/tcp.hpp>
 #include <atomic>
+#include <mutex>
 #include <thread>
 
 class AsyncRequest;
@@ -47,10 +49,12 @@ public:
     bool Start(Trinity::Asio::IoContext* ioContext);
     void Stop();
 
-    boost::asio::ip::tcp::endpoint const& GetAddressForClient(boost::asio::ip::address const& address) const;
+    boost::asio::ip::tcp::endpoint GetAddressForClient(boost::asio::ip::address const& address) const;
 
 private:
     void Run();
+    void AddressUpdateCallback(boost::system::error_code const& error);
+    void UpgradeLoginAddresses();
 
     friend int32 handle_get_plugin(soap* soapClient);
     friend int32 handle_post_plugin(soap* soapClient);
@@ -102,6 +106,9 @@ private:
     Battlenet::JSON::Login::FormInputs _formInputs;
     std::string _bindIP;
     int32 _port;
+    mutable std::mutex _addressMutex;
+    std::mutex _timerMutex;
+    std::unique_ptr<Trinity::Asio::DeadlineTimer> _addressTimer;
     boost::asio::ip::tcp::endpoint _externalAddress;
     boost::asio::ip::tcp::endpoint _localAddress;
     boost::asio::ip::address_v4 _localNetmask;

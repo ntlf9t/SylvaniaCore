@@ -22,6 +22,7 @@
 #include "Define.h"
 #include "Realm.h"
 #include "Resolver.h"
+#include <boost/asio/ip/address.hpp>
 #include <array>
 #include <map>
 #include <vector>
@@ -95,6 +96,7 @@ public:
     void Close();
 
     Realm const* GetRealm(Battlenet::RealmHandle const& id) const;
+    Optional<boost::asio::ip::address> GetAddressForClient(Battlenet::RealmHandle const& id, boost::asio::ip::address const& clientAddress) const;
 
     RealmBuildInfo const* GetBuildInfo(uint32 build) const;
     uint32 GetMinorMajorBugfixVersionForBuild(uint32 build) const;
